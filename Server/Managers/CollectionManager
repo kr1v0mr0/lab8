@@ -1,0 +1,242 @@
+package lab5.Server.Managers;
+
+import lab5.Common.Models.MusicBand;
+import lab5.Common.Models.User;
+import lab5.Common.RemoteServer;
+import lab5.Common.Tools.ExecutionResponse;
+import lab5.Server.RemoteControll;
+
+import java.time.LocalDateTime;
+import java.util.*;
+
+import static java.util.Collections.sort;
+
+
+public class CollectionManager {
+    private int currentId = 1;
+    private HashMap<Integer, MusicBand> collection = new HashMap<>();
+    private LocalDateTime lastInitTime;
+    private LocalDateTime lastSaveTime;
+    private final DBManager dBManager;
+    private long nextId = 1;
+    private RemoteServer rmiControll;
+    private HashMap<String, Integer> users = new HashMap<>();
+    private HashMap<Integer, Integer> usersElements = new HashMap<>();
+
+    public CollectionManager(DBManager dBManager) {
+        this.lastInitTime = null;
+        this.lastSaveTime = null;
+        this.dBManager = dBManager;
+    }
+    /**
+     * @return Последнее время инициализации.
+     */
+    public synchronized LocalDateTime getLastInitTime() {
+        return lastInitTime;
+    }
+
+    public synchronized Integer getUser(String name){ return users.get(name);}
+    /**
+     * @return Последнее время сохранения.
+     */
+    public synchronized LocalDateTime getLastSaveTime() {
+        return lastSaveTime;
+    }
+
+    /**
+     * @return коллекция.
+     */
+    public synchronized HashMap<Integer, MusicBand> getCollection() {
+        return collection;
+    }
+
+    public synchronized HashMap <String, Integer> getUsers() { return users; }
+
+    public synchronized HashMap<Integer, Integer> getUsersElements() { return usersElements; }
+
+    /**
+     * Получить MusicBand по ID
+     */
+    public synchronized MusicBand byId(int id) { return collection.get(id); }
+    /**
+     * Содержит ли колекции MusicBand
+     */
+    public synchronized boolean isСontain(MusicBand e) { return e == null || byId(e.getId()) != null; }
+    /**
+     * Получить свободный ID
+     */
+    public synchronized int getFreeId() {
+        while (byId(++currentId) != null);
+        return currentId;
+    }
+    /**
+     * Добавляет MusicBand
+     */
+    public synchronized ExecutionResponse add(MusicBand a, String username) {
+        ExecutionResponse res = dBManager.addElement(a, getUser(username));
+        if(res.exitCode()){
+            Integer id_element=Integer.parseInt(res.message());
+            a.setId(id_element);
+            collection.put(id_element, a);
+            usersElements.put(id_element,getUser(username));
+            update();
+            sendCollection();
+            return new ExecutionResponse(true, "элемент добавлен");
+        }
+        return res;
+    }
+    /**+
+     * Обновляет MusicBand
+     */
+    public synchronized ExecutionResponse update(MusicBand a) {// todo:питздец
+        ExecutionResponse res = dBManager.updateElement(a);
+        if(res.exitCode()){
+            collection.remove(byId(a.getId()));
+            collection.put(a.getId(), a);
+            update();
+            sendCollection();
+            return new ExecutionResponse(true, "элемент обновлен");
+        }
+        return res;
+    }
+    /**
+     * Удаляет MusicBand по ID
+     */
+    public synchronized ExecutionResponse remove(int id) {//todo: пиздец
+        ExecutionResponse res = dBManager.removeElement((long) id);
+        if(res.exitCode()){
+            MusicBand a = byId(id);
+            if (a == null) return new ExecutionResponse(false, "ошибка удаления");
+            collection.remove(a.getId());
+            update();
+            sendCollection();
+            return new ExecutionResponse(true, "элемент удален");
+        }
+        return res;
+    }
+    /**
+     * Фиксирует изменения коллекции
+     */
+    public synchronized void update() {
+        List<Map.Entry<Integer, MusicBand>> list = new ArrayList<>(collection.entrySet());
+
+        sort(list, new Comparator<Map.Entry<Integer, MusicBand>>() {
+            public int compare(Map.Entry<Integer, MusicBand> o1, Map.Entry<Integer, MusicBand> o2) {
+                return o1.getValue().compareTo(o2.getValue());
+            }
+        });
+
+        collection = new HashMap<>();
+
+        for (Map.Entry<Integer, MusicBand> entry : list) {
+            collection.put(entry.getKey(), entry.getValue());
+        }
+    }
+
+    public synchronized ExecutionResponse init() {// todo:питздец
+        collection.clear();
+        ExecutionResponse res = dBManager.readCollection(collection, usersElements);
+        if(res.exitCode()) {
+            //currentId = collection.values().stream().max(Comparator.comparing(e-> e.getId())).get().getId();
+            lastInitTime = LocalDateTime.now();
+            update();
+            return new ExecutionResponse(true, "успешно");
+        }
+        return res;
+    }
+    @Override
+    public synchronized String toString() {
+        if (collection.isEmpty()) return "Коллекция пуста!";
+
+        StringBuilder info = new StringBuilder();
+        for (MusicBand MusicBand : collection.values()) {
+            info.append("id: " + MusicBand.getId()+"\n");
+            info.append("name: " + MusicBand.getName()+"\n");
+            info.append("coordinates: " + MusicBand.getCoordinates()+"\n");
+            info.append("creationDate: " + MusicBand.getCreationDate()+"\n");
+            info.append("numberOfParticipants: " + MusicBand.getnumberOfParticipants()+"\n");
+            info.append("singlesCount: " + MusicBand.getSinglesCount()+"\n");
+            info.append("albumsCount: " + MusicBand.getAlbumsCount()+"\n");
+            info.append("genre: " + MusicBand.getGenre()+"\n");
+            info.append("Studio: " + MusicBand.getStudio()+"\n\n");
+        }
+        return info.toString().trim();
+    }
+
+    public synchronized ExecutionResponse regUser(User user){//проверка регистрации и авторизации
+        int id =dBManager.checkUser(user);//проверка по базе
+
+        if (id > 0) {
+            users.put(user.getName().toLowerCase(), id);//добавляем в текущих юзеров
+            StringBuilder sb= new StringBuilder();
+            HashMap<Integer, Integer> usersElements = getUsersElements();
+            for (MusicBand e: getCollection().values()){
+                if(usersElements.get(e.getId()).equals(getUser(user.getName()))){
+                    sb.append(e.toStr()+"@"+"1"+"&");
+                }
+                else{
+                    sb.append(e.toStr()+"@"+"0"+"&");
+                }
+            }
+            return new ExecutionResponse(true, sb.toString());
+        } else if (id == -1) {
+            return new ExecutionResponse(false,"Неверный пароль");
+        } else if (id == -2) {
+            ExecutionResponse ans = dBManager.regUser(user);//регаем юзера
+            if (ans.exitCode()) {
+                users.put(user.getName().toLowerCase(), Integer.parseInt(ans.message()));//добавляем в текущие
+                StringBuilder sb= new StringBuilder();
+                HashMap<Integer, Integer> usersElements = getUsersElements();
+                for (MusicBand e: getCollection().values()){
+                    if(usersElements.get(e.getId()).equals(getUser(user.getName()))){
+                        sb.append(e.toStr()+"@"+"1"+"&");
+                    }
+                    else{
+                        sb.append(e.toStr()+"@"+"0"+"&");
+                    }
+                }
+                return new ExecutionResponse(true, sb.toString());
+            }
+            return ans;
+        }
+        return new ExecutionResponse(false,"Ошибка выполнения команды");
+    }
+
+    public synchronized ExecutionResponse disconect(String username){
+        try{
+            users.remove(username);
+            return new ExecutionResponse(true, "завершение работы");
+        }
+        catch (Exception e){return new ExecutionResponse(false, "вссе пиздец");}
+
+    }
+
+    public synchronized void setRmiControll(RemoteServer rmiControll){
+        try{
+            this.rmiControll=rmiControll;
+        }
+        catch (Exception e){}
+    }
+    private synchronized void sendCollection() {
+        try {
+            for (String name : users.keySet()) {
+                rmiControll.notifyAllClients(name, collectionToSend(users.get(name)));
+            }
+        } catch (Exception e) {
+            System.out.println(e.getMessage());
+        }
+    }
+
+    private String collectionToSend(int id){
+        if(collection.size()==0){
+            return "";
+        }
+        else{
+            StringBuilder sb = new StringBuilder();
+            for (MusicBand e: collection.values()){
+                sb.append(e.toStr()+(usersElements.get(e.getId()).equals(id) ? "@1" : "@0")+"&");
+            }
+            return sb.toString();
+        }
+    }
+}
